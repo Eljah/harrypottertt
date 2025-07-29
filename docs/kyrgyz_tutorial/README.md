@@ -18,3 +18,7 @@
 | [Глава 12](chapter12.md) | Производные и модальные формы |
 
 Файлы можно читать последовательно или обращаться к нужной главе отдельно.
+
+### Источники
+[1]: https://en.wikipedia.org/wiki/Kyrgyz_language
+[2]: https://en.wikipedia.org/wiki/Tatar_language
