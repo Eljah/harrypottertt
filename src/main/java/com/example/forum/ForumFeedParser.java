@@ -16,11 +16,11 @@ import java.util.Set;
  * Crawls the public forum and stores extracted posts in {@code forum_dump.txt}.
  *
  * <p>The crawler starts from the index page, walks through all visible forums
- * and for each forum fetches a limited number of topics. For every post in
- * those topics the date, author, topic title and plain text are written to the
- * output file. The parser mimics a regular browser by sending a modern
- * User-Agent string which allows it to read pages that would otherwise redirect
- * to the login form.</p>
+ * and for each forum fetches every topic, following pagination within each
+ * topic. For every post the date, author, topic title and plain text are
+ * written to the output file. The parser mimics a regular browser by sending a
+ * modern User-Agent string which allows it to read pages that would otherwise
+ * redirect to the login form.</p>
  */
 public class ForumFeedParser {
     private static final String ROOT_URL =
@@ -29,12 +29,6 @@ public class ForumFeedParser {
     private static final String USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/115.0 Safari/537.36";
-
-    /**
-     * Limits the number of topics fetched from each forum to keep runtime
-     * reasonable for a simple demonstration.
-     */
-    private static final int TOPICS_PER_FORUM = 5;
 
     private static final Set<String> VISITED_FORUMS = new HashSet<>();
 
@@ -70,39 +64,41 @@ public class ForumFeedParser {
             }
         }
 
-        int processed = 0;
         for (Element topic : forum.select("a.topictitle")) {
             parseTopic(topic.absUrl("href"), writer);
-            if (++processed >= TOPICS_PER_FORUM) {
-                break;
-            }
         }
     }
 
     private static void parseTopic(String topicUrl, BufferedWriter writer) throws IOException {
-        Document doc = Jsoup.connect(topicUrl)
-                .userAgent(USER_AGENT)
-                .timeout(10_000)
-                .get();
+        String pageUrl = topicUrl;
+        while (pageUrl != null) {
+            Document doc = Jsoup.connect(pageUrl)
+                    .userAgent(USER_AGENT)
+                    .timeout(10_000)
+                    .get();
 
-        Element titleEl = doc.selectFirst("h2 a.titles");
-        String topicTitle = titleEl != null ? titleEl.text() : "";
+            Element titleEl = doc.selectFirst("h2 a.titles");
+            String topicTitle = titleEl != null ? titleEl.text() : "";
 
-        for (Element headerRow : doc.select("tr:has(b.postauthor)")) {
-            String author = headerRow.selectFirst("b.postauthor").text();
-            String date = headerRow.select("div:matchesOwn(Добавлено:)")
-                    .text().replace("Добавлено:", "").trim();
-            Element contentRow = headerRow.nextElementSibling();
-            if (contentRow == null) {
-                continue;
+            for (Element headerRow : doc.select("tr:has(b.postauthor)")) {
+                String author = headerRow.selectFirst("b.postauthor").text();
+                String date = headerRow.select("div:matchesOwn(Добавлено:)")
+                        .text().replace("Добавлено:", "").trim();
+                Element contentRow = headerRow.nextElementSibling();
+                if (contentRow == null) {
+                    continue;
+                }
+                Element body = contentRow.selectFirst("div.postbody");
+                if (body == null) {
+                    continue;
+                }
+                String text = body.text().replaceAll("\\s+", " ").trim();
+                writer.write(String.join(" | ", date, author, topicTitle, text));
+                writer.newLine();
             }
-            Element body = contentRow.selectFirst("div.postbody");
-            if (body == null) {
-                continue;
-            }
-            String text = body.text().replaceAll("\\s+", " ").trim();
-            writer.write(String.join(" | ", date, author, topicTitle, text));
-            writer.newLine();
+
+            Element nextPage = doc.selectFirst("a:matchesOwn(^След\\.?$)");
+            pageUrl = nextPage != null ? nextPage.absUrl("href") : null;
         }
     }
 }
