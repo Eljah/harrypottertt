@@ -3,46 +3,107 @@ package com.example.forum;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
-import org.jsoup.parser.Parser;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
- * Simple utility that fetches the public Atom feed of the forum and stores each
- * entry as a line in {@code forum_dump.txt}.
+ * Crawls the public forum and stores extracted posts in {@code forum_dump.txt}.
+ *
+ * <p>The crawler starts from the index page, walks through all visible forums
+ * and for each forum fetches a limited number of topics. For every post in
+ * those topics the date, author, topic title and plain text are written to the
+ * output file. The parser mimics a regular browser by sending a modern
+ * User-Agent string which allows it to read pages that would otherwise redirect
+ * to the login form.</p>
  */
 public class ForumFeedParser {
-    private static final String FEED_URL = "http://bboard.negonki.ru/feed.php?mode=topics_active";
+    private static final String ROOT_URL =
+            System.getProperty("forum.root", "http://bboard.negonki.ru");
+    private static final String INDEX_URL = ROOT_URL + "/index.php";
+    private static final String USER_AGENT =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/115.0 Safari/537.36";
+
+    /**
+     * Limits the number of topics fetched from each forum to keep runtime
+     * reasonable for a simple demonstration.
+     */
+    private static final int TOPICS_PER_FORUM = 5;
+
+    private static final Set<String> VISITED_FORUMS = new HashSet<>();
 
     public static void main(String[] args) throws IOException {
-        Document doc;
-        try {
-            doc = Jsoup.connect(FEED_URL)
-                    .header("Accept", "application/atom+xml")
-                    .userAgent("Mozilla/5.0")
-                    .timeout(10_000)
-                    .parser(Parser.xmlParser())
-                    .get();
-        } catch (IOException ex) {
-            // If network is unavailable, fall back to a local file named 'feed.xml'.
-            doc = Jsoup.parse(Files.readString(Path.of("feed.xml")), "", Parser.xmlParser());
-        }
+        Document index = Jsoup.connect(INDEX_URL)
+                .userAgent(USER_AGENT)
+                .timeout(10_000)
+                .get();
 
         Path out = Path.of("forum_dump.txt");
         try (BufferedWriter writer = Files.newBufferedWriter(out, StandardCharsets.UTF_8)) {
-            for (Element entry : doc.select("entry")) {
-                String date = entry.selectFirst("updated").text();
-                String user = entry.selectFirst("author > name").text();
-                String topic = entry.selectFirst("title").text();
-                String contentHtml = entry.selectFirst("content").text();
-                String text = Jsoup.parse(contentHtml).text().replaceAll("\n", " ");
-                writer.write(String.join(", ", date, user, topic, text));
-                writer.newLine();
+            for (Element forumLink : index.select("a.forumlink")) {
+                parseForum(forumLink.absUrl("href"), writer);
             }
         }
     }
+
+    private static void parseForum(String forumUrl, BufferedWriter writer) throws IOException {
+        if (!VISITED_FORUMS.add(forumUrl)) {
+            return; // avoid revisiting the same forum
+        }
+
+        Document forum = Jsoup.connect(forumUrl)
+                .userAgent(USER_AGENT)
+                .timeout(10_000)
+                .get();
+
+        // Recursively follow subforum links
+        for (Element subforum : forum.select("a.forumlink")) {
+            String href = subforum.absUrl("href");
+            if (!href.equals(forumUrl)) {
+                parseForum(href, writer);
+            }
+        }
+
+        int processed = 0;
+        for (Element topic : forum.select("a.topictitle")) {
+            parseTopic(topic.absUrl("href"), writer);
+            if (++processed >= TOPICS_PER_FORUM) {
+                break;
+            }
+        }
+    }
+
+    private static void parseTopic(String topicUrl, BufferedWriter writer) throws IOException {
+        Document doc = Jsoup.connect(topicUrl)
+                .userAgent(USER_AGENT)
+                .timeout(10_000)
+                .get();
+
+        Element titleEl = doc.selectFirst("h2 a.titles");
+        String topicTitle = titleEl != null ? titleEl.text() : "";
+
+        for (Element headerRow : doc.select("tr:has(b.postauthor)")) {
+            String author = headerRow.selectFirst("b.postauthor").text();
+            String date = headerRow.select("div:matchesOwn(Добавлено:)")
+                    .text().replace("Добавлено:", "").trim();
+            Element contentRow = headerRow.nextElementSibling();
+            if (contentRow == null) {
+                continue;
+            }
+            Element body = contentRow.selectFirst("div.postbody");
+            if (body == null) {
+                continue;
+            }
+            String text = body.text().replaceAll("\\s+", " ").trim();
+            writer.write(String.join(" | ", date, author, topicTitle, text));
+            writer.newLine();
+        }
+    }
 }
+
